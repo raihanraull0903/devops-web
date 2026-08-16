@@ -45,5 +45,15 @@ pipeline {
                 }
             }
         }
+
+        stage('Deploy') {
+            steps {
+                sh '''
+                    ansible-playbook \
+                    -i /opt/devops-ansible/inventory.ini \
+                    /opt/devops-ansible/deploy-web.yml
+                '''
+            }
+        }
     }
 }
