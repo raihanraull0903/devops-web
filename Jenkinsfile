@@ -1,13 +1,12 @@
+```groovy
 pipeline {
 
     agent any
 
     environment {
-        DOCKER_USERNAME = 'raihan999'
-        IMAGE_NAME = 'raihan999/devops-web'
-
-        ANSIBLE_DIR = '/home/ubuntu/devops-project/ansible'
-        INVENTORY = '/home/ubuntu/devops-project/ansible/inventory.ini'
+        DOCKER_IMAGE = "raihan999/devops-web"
+        INVENTORY = "/home/ubuntu/devops-project/ansible/inventory.ini"
+        ANSIBLE_DIR = "/home/ubuntu/devops-project/ansible"
     }
 
     stages {
@@ -21,6 +20,8 @@ pipeline {
         stage('Test') {
             steps {
                 sh '''
+                    set -e
+
                     echo "======================================"
                     echo "Testing DevOps Web"
                     echo "======================================"
@@ -43,7 +44,7 @@ pipeline {
                         returnStdout: true
                     ).trim()
 
-                    env.NEW_IMAGE = "${IMAGE_NAME}:${IMAGE_TAG}"
+                    env.NEW_IMAGE = "${DOCKER_IMAGE}:${IMAGE_TAG}"
 
                     echo "======================================"
                     echo "Docker Build"
@@ -51,9 +52,8 @@ pipeline {
                     echo "======================================"
 
                     sh """
-                        docker build \
-                        -t ${NEW_IMAGE} \
-                        .
+                        set -e
+                        docker build -t ${NEW_IMAGE} .
                     """
                 }
             }
@@ -61,42 +61,43 @@ pipeline {
 
         stage('Docker Push') {
             steps {
-
                 withCredentials([
                     usernamePassword(
                         credentialsId: 'dockerhub-credentials',
-                        usernameVariable: 'DOCKER_USER',
+                        usernameVariable: 'DOCKER_USERNAME',
                         passwordVariable: 'DOCKER_PASSWORD'
                     )
                 ]) {
 
-                    sh '''
+                    sh """
+                        set -e
+
                         echo "======================================"
                         echo "Docker Hub Login"
                         echo "======================================"
 
-                        echo "$DOCKER_PASSWORD" | docker login \
-                            -u "$DOCKER_USER" \
+                        echo "\$DOCKER_PASSWORD" | docker login \
+                            -u "\$DOCKER_USERNAME" \
                             --password-stdin
 
-                        echo "Pushing image: $NEW_IMAGE"
+                        echo "Pushing image:"
+                        echo "${NEW_IMAGE}"
 
-                        docker push "$NEW_IMAGE"
+                        docker push ${NEW_IMAGE}
 
                         echo "Docker image pushed successfully"
-                    '''
+                    """
                 }
             }
         }
 
         stage('Get Current Production Image') {
             steps {
-
-                echo "======================================"
-                echo "Getting Current Production Image"
-                echo "======================================"
-
                 script {
+
+                    echo "======================================"
+                    echo "Getting Current Production Image"
+                    echo "======================================"
 
                     def output = sh(
                         script: """
@@ -109,17 +110,25 @@ pipeline {
 
                     echo output
 
-                    def match = output =~ /CURRENT_IMAGE=([^\\s"]+)/
+                    /*
+                     * Mencari:
+                     *
+                     * CURRENT_IMAGE=raihan999/devops-web:65bebd9
+                     *
+                     * dan mengambil seluruh image reference.
+                     */
 
-                    if (!match.find()) {
-                        error("Current production image tidak ditemukan")
+                    def matcher = output =~ /CURRENT_IMAGE=(raihan999\\/devops-web:[A-Za-z0-9._-]+)/
+
+                    if (!matcher.find()) {
+                        error("Gagal mendapatkan CURRENT_IMAGE dari Ansible")
                     }
 
-                    env.PREVIOUS_IMAGE = match.group(1).trim()
+                    env.PREVIOUS_IMAGE = matcher.group(1)
 
                     echo "======================================"
                     echo "Previous Production Image:"
-                    echo "${PREVIOUS_IMAGE}"
+                    echo "${env.PREVIOUS_IMAGE}"
                     echo "======================================"
                 }
             }
@@ -127,24 +136,62 @@ pipeline {
 
         stage('Deploy') {
             steps {
+                script {
 
-                echo "======================================"
-                echo "Deploying New Image"
-                echo "Image: ${NEW_IMAGE}"
-                echo "======================================"
+                    try {
 
-                sh """
-                    ansible-playbook \
-                    -i ${INVENTORY} \
-                    ${ANSIBLE_DIR}/deploy-web.yml \
-                    -e "image_tag=${IMAGE_TAG}"
-                """
+                        echo "======================================"
+                        echo "Deploying New Image"
+                        echo "Image: ${NEW_IMAGE}"
+                        echo "======================================"
+
+                        sh """
+                            set -e
+
+                            ansible-playbook \
+                            -i ${INVENTORY} \
+                            ${ANSIBLE_DIR}/deploy-web.yml \
+                            -e "image_tag=${IMAGE_TAG}"
+                        """
+
+                        echo "Deployment completed."
+
+                    } catch (Exception e) {
+
+                        echo "======================================"
+                        echo "DEPLOYMENT FAILED"
+                        echo "======================================"
+                        echo "Starting automatic rollback..."
+
+                        def rollbackTag = env.PREVIOUS_IMAGE.substring(
+                            env.PREVIOUS_IMAGE.lastIndexOf(':') + 1
+                        )
+
+                        echo "Rollback image:"
+                        echo "${env.PREVIOUS_IMAGE}"
+
+                        echo "Rollback tag:"
+                        echo "${rollbackTag}"
+
+                        sh """
+                            set -e
+
+                            ansible-playbook \
+                            -i ${INVENTORY} \
+                            ${ANSIBLE_DIR}/rollback-web.yml \
+                            -e "rollback_tag=${rollbackTag}"
+                        """
+
+                        echo "Automatic rollback completed."
+
+                        error("Deployment failed. Rollback completed.")
+                    }
+                }
             }
         }
 
         stage('Health Check') {
             steps {
-
                 script {
 
                     try {
@@ -154,37 +201,38 @@ pipeline {
                         echo "======================================"
 
                         sh """
+                            set -e
+
                             ansible-playbook \
                             -i ${INVENTORY} \
                             ${ANSIBLE_DIR}/health-check.yml
                         """
 
-                        echo "Health check passed."
-
                         echo "======================================"
-                        echo "SIMULATING DEPLOYMENT FAILURE"
+                        echo "Health Check PASSED"
                         echo "======================================"
-
-                        error("SIMULATED DEPLOYMENT FAILURE")
 
                     } catch (Exception e) {
 
                         echo "======================================"
-                        echo "DEPLOYMENT FAILED"
+                        echo "HEALTH CHECK FAILED"
                         echo "======================================"
 
                         echo "Starting automatic rollback..."
 
-                        def rollbackTag =
-                            env.PREVIOUS_IMAGE.tokenize(':')[-1]
+                        def rollbackTag = env.PREVIOUS_IMAGE.substring(
+                            env.PREVIOUS_IMAGE.lastIndexOf(':') + 1
+                        )
 
-                        echo "Rollback target:"
-                        echo "${PREVIOUS_IMAGE}"
+                        echo "Rollback image:"
+                        echo "${env.PREVIOUS_IMAGE}"
 
                         echo "Rollback tag:"
                         echo "${rollbackTag}"
 
                         sh """
+                            set -e
+
                             ansible-playbook \
                             -i ${INVENTORY} \
                             ${ANSIBLE_DIR}/rollback-web.yml \
@@ -195,12 +243,7 @@ pipeline {
                         echo "AUTOMATIC ROLLBACK COMPLETED"
                         echo "======================================"
 
-                        echo "Restored image:"
-                        echo "${PREVIOUS_IMAGE}"
-
-                        error(
-                            "Deployment failed. Automatic rollback completed."
-                        )
+                        error("Health check failed. Rollback completed.")
                     }
                 }
             }
@@ -209,6 +252,27 @@ pipeline {
 
     post {
 
+        always {
+
+            sh '''
+                docker logout || true
+            '''
+
+            echo """
+========================================
+          PIPELINE FINISHED
+========================================
+
+Previous production image:
+${PREVIOUS_IMAGE ?: 'Not available'}
+
+New image:
+${NEW_IMAGE ?: 'Not available'}
+
+========================================
+"""
+        }
+
         success {
 
             echo """
@@ -216,11 +280,11 @@ pipeline {
        DEPLOYMENT SUCCESSFUL
 ========================================
 
-New image:
+Production image:
 ${NEW_IMAGE}
 
-Previous image:
-${PREVIOUS_IMAGE}
+Health check:
+PASSED
 
 ========================================
 """
@@ -233,20 +297,15 @@ ${PREVIOUS_IMAGE}
           PIPELINE FAILED
 ========================================
 
-Automatic rollback was attempted.
-
 Previous production image:
-${PREVIOUS_IMAGE}
+${PREVIOUS_IMAGE ?: 'Not available'}
+
+Automatic rollback:
+Attempted
 
 ========================================
 """
         }
-
-        always {
-
-            sh '''
-                docker logout || true
-            '''
-        }
     }
 }
+```
