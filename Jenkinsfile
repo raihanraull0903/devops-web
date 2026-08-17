@@ -3,6 +3,8 @@ pipeline {
 
     environment {
         DOCKER_IMAGE = 'raihan999/devops-web'
+        IMAGE_TAG = "${env.GIT_COMMIT.substring(0, 7)}"
+        DOCKER_CREDENTIALS = credentials('dockerhub-credentials')
     }
 
     stages {
@@ -10,19 +12,6 @@ pipeline {
         stage('Checkout') {
             steps {
                 checkout scm
-            }
-        }
-
-        stage('Prepare Version') {
-            steps {
-                script {
-                    env.IMAGE_TAG = sh(
-                        script: 'git rev-parse --short HEAD',
-                        returnStdout: true
-                    ).trim()
-
-                    echo "Docker Image: ${DOCKER_IMAGE}:${IMAGE_TAG}"
-                }
             }
         }
 
@@ -37,12 +26,7 @@ pipeline {
                     test -f style.css
                     test -f Dockerfile
 
-                    echo ""
-                    echo "Website content:"
-                    grep "<h1>" index.html
-
-                    echo ""
-                    echo "All tests passed!"
+                    echo "Test passed!"
                 '''
             }
         }
@@ -54,46 +38,32 @@ pipeline {
                     echo "Building Docker Image..."
                     echo "================================"
 
-                    docker build --no-cache \
+                    docker build \
                         -t ${DOCKER_IMAGE}:${IMAGE_TAG} \
-                        -t ${DOCKER_IMAGE}:latest .
-
-                    echo ""
-                    echo "Built images:"
-                    docker images ${DOCKER_IMAGE}
+                        .
                 '''
             }
         }
 
         stage('Docker Push') {
             steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'dockerhub-credentials',
-                        usernameVariable: 'DOCKER_USERNAME',
-                        passwordVariable: 'DOCKER_PASSWORD'
-                    )
-                ]) {
-                    sh '''
-                        echo "================================"
-                        echo "Pushing Image to Docker Hub..."
-                        echo "================================"
+                sh '''
+                    echo "================================"
+                    echo "Pushing Docker Image..."
+                    echo "================================"
 
-                        echo "$DOCKER_PASSWORD" | docker login \
-                            -u "$DOCKER_USERNAME" \
-                            --password-stdin
+                    echo "$DOCKER_CREDENTIALS_PSW" | docker login \
+                        -u "$DOCKER_CREDENTIALS_USR" \
+                        --password-stdin
 
-                        docker push ${DOCKER_IMAGE}:${IMAGE_TAG}
-                        docker push ${DOCKER_IMAGE}:latest
+                    docker push ${DOCKER_IMAGE}:${IMAGE_TAG}
 
-                        docker logout
+                    docker tag \
+                        ${DOCKER_IMAGE}:${IMAGE_TAG} \
+                        ${DOCKER_IMAGE}:latest
 
-                        echo ""
-                        echo "Pushed:"
-                        echo "${DOCKER_IMAGE}:${IMAGE_TAG}"
-                        echo "${DOCKER_IMAGE}:latest"
-                    '''
-                }
+                    docker push ${DOCKER_IMAGE}:latest
+                '''
             }
         }
 
@@ -105,12 +75,13 @@ pipeline {
                     echo "================================"
 
                     ansible-playbook \
-                        -i /opt/devops-ansible/inventory.ini \
-                        /opt/devops-ansible/deploy-web.yml \
+                        -i /home/ubuntu/devops-project/ansible/inventory.ini \
+                        /home/ubuntu/devops-project/ansible/deploy-web.yml \
                         -e "docker_image=${DOCKER_IMAGE}:${IMAGE_TAG}"
 
-                    echo ""
+                    echo "================================"
                     echo "Deployment completed!"
+                    echo "================================"
                 '''
             }
         }
@@ -121,7 +92,7 @@ pipeline {
             echo '================================'
             echo 'CI/CD PIPELINE SUCCESS!'
             echo '================================'
-            echo "Deployed version: ${IMAGE_TAG}"
+            echo "Docker Image: ${DOCKER_IMAGE}:${IMAGE_TAG}"
         }
 
         failure {
