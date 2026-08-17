@@ -46,7 +46,7 @@ pipeline {
                     env.NEW_IMAGE = "${IMAGE_NAME}:${IMAGE_TAG}"
 
                     echo "======================================"
-                    echo "Building Docker Image"
+                    echo "Docker Build"
                     echo "Image: ${NEW_IMAGE}"
                     echo "======================================"
 
@@ -72,14 +72,14 @@ pipeline {
 
                     sh '''
                         echo "======================================"
-                        echo "Logging in to Docker Hub"
+                        echo "Docker Hub Login"
                         echo "======================================"
 
                         echo "$DOCKER_PASSWORD" | docker login \
                             -u "$DOCKER_USER" \
                             --password-stdin
 
-                        echo "Pushing image..."
+                        echo "Pushing image: $NEW_IMAGE"
 
                         docker push "$NEW_IMAGE"
 
@@ -92,11 +92,11 @@ pipeline {
         stage('Get Current Production Image') {
             steps {
 
-                script {
+                echo "======================================"
+                echo "Getting Current Production Image"
+                echo "======================================"
 
-                    echo "======================================"
-                    echo "Getting Current Production Image"
-                    echo "======================================"
+                script {
 
                     def output = sh(
                         script: """
@@ -109,19 +109,18 @@ pipeline {
 
                     echo output
 
-                    def lines = output.readLines().findAll {
-                        it.contains('Current production image:')
-                    }
+                    def match = output =~ /CURRENT_IMAGE=([^\\s"]+)/
 
-                    if (lines.isEmpty()) {
+                    if (!match.find()) {
                         error("Current production image tidak ditemukan")
                     }
 
-                    env.PREVIOUS_IMAGE = lines.last()
-                        .replace('Current production image:', '')
-                        .trim()
+                    env.PREVIOUS_IMAGE = match.group(1).trim()
 
-                    echo "Previous production image: ${PREVIOUS_IMAGE}"
+                    echo "======================================"
+                    echo "Previous Production Image:"
+                    echo "${PREVIOUS_IMAGE}"
+                    echo "======================================"
                 }
             }
         }
@@ -179,7 +178,11 @@ pipeline {
                         def rollbackTag =
                             env.PREVIOUS_IMAGE.tokenize(':')[-1]
 
-                        echo "Rollback target: ${PREVIOUS_IMAGE}"
+                        echo "Rollback target:"
+                        echo "${PREVIOUS_IMAGE}"
+
+                        echo "Rollback tag:"
+                        echo "${rollbackTag}"
 
                         sh """
                             ansible-playbook \
@@ -192,7 +195,8 @@ pipeline {
                         echo "AUTOMATIC ROLLBACK COMPLETED"
                         echo "======================================"
 
-                        echo "Restored image: ${PREVIOUS_IMAGE}"
+                        echo "Restored image:"
+                        echo "${PREVIOUS_IMAGE}"
 
                         error(
                             "Deployment failed. Automatic rollback completed."
@@ -230,6 +234,9 @@ ${PREVIOUS_IMAGE}
 ========================================
 
 Automatic rollback was attempted.
+
+Previous production image:
+${PREVIOUS_IMAGE}
 
 ========================================
 """
