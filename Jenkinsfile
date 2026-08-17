@@ -1,9 +1,22 @@
 pipeline {
     agent any
 
+    parameters {
+        choice(
+            name: 'ACTION',
+            choices: ['DEPLOY', 'ROLLBACK'],
+            description: 'Pilih aksi deployment'
+        )
+
+        string(
+            name: 'ROLLBACK_TAG',
+            defaultValue: '0a38c38',
+            description: 'Docker image tag untuk rollback'
+        )
+    }
+
     environment {
         DOCKER_IMAGE = 'raihan999/devops-web'
-        IMAGE_TAG = "${env.GIT_COMMIT.substring(0, 7)}"
         DOCKER_CREDENTIALS = credentials('dockerhub-credentials')
     }
 
@@ -15,7 +28,32 @@ pipeline {
             }
         }
 
+        stage('Prepare Version') {
+            when {
+                expression {
+                    params.ACTION == 'DEPLOY'
+                }
+            }
+
+            steps {
+                script {
+                    env.IMAGE_TAG = sh(
+                        script: "git rev-parse --short=7 HEAD",
+                        returnStdout: true
+                    ).trim()
+
+                    echo "Image version: ${env.IMAGE_TAG}"
+                }
+            }
+        }
+
         stage('Test') {
+            when {
+                expression {
+                    params.ACTION == 'DEPLOY'
+                }
+            }
+
             steps {
                 sh '''
                     echo "================================"
@@ -32,10 +70,16 @@ pipeline {
         }
 
         stage('Docker Build') {
+            when {
+                expression {
+                    params.ACTION == 'DEPLOY'
+                }
+            }
+
             steps {
                 sh '''
                     echo "================================"
-                    echo "Building Docker Image..."
+                    echo "Building Docker Image"
                     echo "================================"
 
                     docker build \
@@ -46,10 +90,16 @@ pipeline {
         }
 
         stage('Docker Push') {
+            when {
+                expression {
+                    params.ACTION == 'DEPLOY'
+                }
+            }
+
             steps {
                 sh '''
                     echo "================================"
-                    echo "Pushing Docker Image..."
+                    echo "Pushing Docker Image"
                     echo "================================"
 
                     echo "$DOCKER_CREDENTIALS_PSW" | docker login \
@@ -68,19 +118,49 @@ pipeline {
         }
 
         stage('Deploy') {
+            when {
+                expression {
+                    params.ACTION == 'DEPLOY'
+                }
+            }
+
             steps {
                 sh '''
                     echo "================================"
-                    echo "Deploying with Ansible..."
+                    echo "Deploying ${DOCKER_IMAGE}:${IMAGE_TAG}"
                     echo "================================"
 
                     ansible-playbook \
                         -i /home/ubuntu/devops-project/ansible/inventory.ini \
                         /home/ubuntu/devops-project/ansible/deploy-web.yml \
                         -e "docker_image=${DOCKER_IMAGE}:${IMAGE_TAG}"
+                '''
+            }
+        }
+
+        stage('Rollback') {
+            when {
+                expression {
+                    params.ACTION == 'ROLLBACK'
+                }
+            }
+
+            steps {
+                sh '''
+                    echo "================================"
+                    echo "ROLLBACK"
+                    echo "================================"
+
+                    echo "Rolling back to:"
+                    echo "${DOCKER_IMAGE}:${ROLLBACK_TAG}"
+
+                    ansible-playbook \
+                        -i /home/ubuntu/devops-project/ansible/inventory.ini \
+                        /home/ubuntu/devops-project/ansible/rollback-web.yml \
+                        -e "docker_image=${DOCKER_IMAGE}:${ROLLBACK_TAG}"
 
                     echo "================================"
-                    echo "Deployment completed!"
+                    echo "Rollback completed!"
                     echo "================================"
                 '''
             }
@@ -90,14 +170,13 @@ pipeline {
     post {
         success {
             echo '================================'
-            echo 'CI/CD PIPELINE SUCCESS!'
+            echo 'PIPELINE SUCCESS'
             echo '================================'
-            echo "Docker Image: ${DOCKER_IMAGE}:${IMAGE_TAG}"
         }
 
         failure {
             echo '================================'
-            echo 'CI/CD PIPELINE FAILED!'
+            echo 'PIPELINE FAILED'
             echo '================================'
         }
     }
