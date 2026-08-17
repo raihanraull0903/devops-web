@@ -34,6 +34,7 @@ pipeline {
         stage('Docker Build') {
             steps {
                 script {
+
                     env.IMAGE_TAG = sh(
                         script: 'git rev-parse --short HEAD',
                         returnStdout: true
@@ -59,6 +60,7 @@ pipeline {
                         passwordVariable: 'DOCKER_PASSWORD'
                     )
                 ]) {
+
                     sh '''
                         echo "$DOCKER_PASSWORD" | docker login \
                             -u "$DOCKER_USER" \
@@ -73,17 +75,29 @@ pipeline {
         stage('Get Current Production Image') {
             steps {
                 script {
-                    env.PREVIOUS_IMAGE = sh(
+
+                    def output = sh(
                         script: """
-                            sudo -u jenkins ansible-playbook \
+                            ansible-playbook \
                             -i ${INVENTORY} \
                             ${ANSIBLE_DIR}/get-current-image.yml
                         """,
                         returnStdout: true
-                    ).readLines()
-                    .findAll { it.contains('Current production image:') }
-                    .collect { it.replace('Current production image:', '').trim() }
-                    .last()
+                    ).trim()
+
+                    echo output
+
+                    def lines = output.readLines().findAll {
+                        it.contains('Current production image:')
+                    }
+
+                    if (lines.isEmpty()) {
+                        error("Tidak dapat menemukan current production image")
+                    }
+
+                    env.PREVIOUS_IMAGE = lines.last()
+                        .replace('Current production image:', '')
+                        .trim()
 
                     echo "Previous production image: ${PREVIOUS_IMAGE}"
                 }
@@ -92,8 +106,11 @@ pipeline {
 
         stage('Deploy') {
             steps {
+
+                echo "Deploying ${NEW_IMAGE}"
+
                 sh """
-                    sudo -u jenkins ansible-playbook \
+                    ansible-playbook \
                     -i ${INVENTORY} \
                     ${ANSIBLE_DIR}/deploy-web.yml \
                     -e "image_tag=${IMAGE_TAG}"
@@ -103,23 +120,43 @@ pipeline {
 
         stage('Health Check') {
             steps {
+
                 script {
+
                     try {
+
+                        echo "Checking application health..."
+
                         sh """
-                            sudo -u jenkins ansible-playbook \
+                            ansible-playbook \
                             -i ${INVENTORY} \
                             ${ANSIBLE_DIR}/health-check.yml
                         """
+
+                        echo "Health check passed."
+
                     } catch (Exception e) {
-                        echo "Health check FAILED!"
+
+                        echo "======================================"
+                        echo "HEALTH CHECK FAILED"
+                        echo "======================================"
+
                         echo "Starting automatic rollback..."
+                        echo "Rollback target: ${PREVIOUS_IMAGE}"
+
+                        def rollbackTag = env.PREVIOUS_IMAGE.tokenize(':')[-1]
 
                         sh """
-                            sudo -u jenkins ansible-playbook \
+                            ansible-playbook \
                             -i ${INVENTORY} \
                             ${ANSIBLE_DIR}/rollback-web.yml \
-                            -e "rollback_tag=${PREVIOUS_IMAGE.split(':')[-1]}"
+                            -e "rollback_tag=${rollbackTag}"
                         """
+
+                        echo "======================================"
+                        echo "AUTOMATIC ROLLBACK COMPLETED"
+                        echo "Rollback image: ${PREVIOUS_IMAGE}"
+                        echo "======================================"
 
                         error("Deployment failed. Automatic rollback completed.")
                     }
@@ -129,21 +166,32 @@ pipeline {
     }
 
     post {
+
         success {
-            echo "======================================"
-            echo "DEPLOYMENT SUCCESSFUL"
-            echo "Image: ${NEW_IMAGE}"
-            echo "======================================"
+
+            echo """
+========================================
+       DEPLOYMENT SUCCESSFUL
+========================================
+Image deployed : ${NEW_IMAGE}
+Previous image : ${PREVIOUS_IMAGE}
+========================================
+"""
         }
 
         failure {
-            echo "======================================"
-            echo "PIPELINE FAILED"
-            echo "Check the logs above."
-            echo "======================================"
+
+            echo """
+========================================
+          PIPELINE FAILED
+========================================
+Check the pipeline logs.
+========================================
+"""
         }
 
         always {
+
             sh '''
                 docker logout || true
             '''
