@@ -1,4 +1,3 @@
-```groovy
 pipeline {
 
     agent any
@@ -308,4 +307,3 @@ Attempted
         }
     }
 }
-```
