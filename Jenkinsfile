@@ -5,6 +5,7 @@ pipeline {
     environment {
         DOCKER_USERNAME = 'raihan999'
         IMAGE_NAME = 'raihan999/devops-web'
+
         ANSIBLE_DIR = '/home/ubuntu/devops-project/ansible'
         INVENTORY = '/home/ubuntu/devops-project/ansible/inventory.ini'
     }
@@ -20,7 +21,9 @@ pipeline {
         stage('Test') {
             steps {
                 sh '''
-                    echo "Testing DevOps Web..."
+                    echo "======================================"
+                    echo "Testing DevOps Web"
+                    echo "======================================"
 
                     test -f index.html
                     test -f style.css
@@ -42,10 +45,15 @@ pipeline {
 
                     env.NEW_IMAGE = "${IMAGE_NAME}:${IMAGE_TAG}"
 
-                    echo "New image: ${NEW_IMAGE}"
+                    echo "======================================"
+                    echo "Building Docker Image"
+                    echo "Image: ${NEW_IMAGE}"
+                    echo "======================================"
 
                     sh """
-                        docker build -t ${NEW_IMAGE} .
+                        docker build \
+                        -t ${NEW_IMAGE} \
+                        .
                     """
                 }
             }
@@ -53,6 +61,7 @@ pipeline {
 
         stage('Docker Push') {
             steps {
+
                 withCredentials([
                     usernamePassword(
                         credentialsId: 'dockerhub-credentials',
@@ -62,11 +71,19 @@ pipeline {
                 ]) {
 
                     sh '''
+                        echo "======================================"
+                        echo "Logging in to Docker Hub"
+                        echo "======================================"
+
                         echo "$DOCKER_PASSWORD" | docker login \
                             -u "$DOCKER_USER" \
                             --password-stdin
 
+                        echo "Pushing image..."
+
                         docker push "$NEW_IMAGE"
+
+                        echo "Docker image pushed successfully"
                     '''
                 }
             }
@@ -74,7 +91,12 @@ pipeline {
 
         stage('Get Current Production Image') {
             steps {
+
                 script {
+
+                    echo "======================================"
+                    echo "Getting Current Production Image"
+                    echo "======================================"
 
                     def output = sh(
                         script: """
@@ -92,7 +114,7 @@ pipeline {
                     }
 
                     if (lines.isEmpty()) {
-                        error("Tidak dapat menemukan current production image")
+                        error("Current production image tidak ditemukan")
                     }
 
                     env.PREVIOUS_IMAGE = lines.last()
@@ -107,7 +129,10 @@ pipeline {
         stage('Deploy') {
             steps {
 
-                echo "Deploying ${NEW_IMAGE}"
+                echo "======================================"
+                echo "Deploying New Image"
+                echo "Image: ${NEW_IMAGE}"
+                echo "======================================"
 
                 sh """
                     ansible-playbook \
@@ -125,7 +150,9 @@ pipeline {
 
                     try {
 
-                        echo "Checking application health..."
+                        echo "======================================"
+                        echo "Running Production Health Check"
+                        echo "======================================"
 
                         sh """
                             ansible-playbook \
@@ -135,16 +162,24 @@ pipeline {
 
                         echo "Health check passed."
 
+                        echo "======================================"
+                        echo "SIMULATING DEPLOYMENT FAILURE"
+                        echo "======================================"
+
+                        error("SIMULATED DEPLOYMENT FAILURE")
+
                     } catch (Exception e) {
 
                         echo "======================================"
-                        echo "HEALTH CHECK FAILED"
+                        echo "DEPLOYMENT FAILED"
                         echo "======================================"
 
                         echo "Starting automatic rollback..."
-                        echo "Rollback target: ${PREVIOUS_IMAGE}"
 
-                        def rollbackTag = env.PREVIOUS_IMAGE.tokenize(':')[-1]
+                        def rollbackTag =
+                            env.PREVIOUS_IMAGE.tokenize(':')[-1]
+
+                        echo "Rollback target: ${PREVIOUS_IMAGE}"
 
                         sh """
                             ansible-playbook \
@@ -155,10 +190,13 @@ pipeline {
 
                         echo "======================================"
                         echo "AUTOMATIC ROLLBACK COMPLETED"
-                        echo "Rollback image: ${PREVIOUS_IMAGE}"
                         echo "======================================"
 
-                        error("Deployment failed. Automatic rollback completed.")
+                        echo "Restored image: ${PREVIOUS_IMAGE}"
+
+                        error(
+                            "Deployment failed. Automatic rollback completed."
+                        )
                     }
                 }
             }
@@ -173,8 +211,13 @@ pipeline {
 ========================================
        DEPLOYMENT SUCCESSFUL
 ========================================
-Image deployed : ${NEW_IMAGE}
-Previous image : ${PREVIOUS_IMAGE}
+
+New image:
+${NEW_IMAGE}
+
+Previous image:
+${PREVIOUS_IMAGE}
+
 ========================================
 """
         }
@@ -185,7 +228,9 @@ Previous image : ${PREVIOUS_IMAGE}
 ========================================
           PIPELINE FAILED
 ========================================
-Check the pipeline logs.
+
+Automatic rollback was attempted.
+
 ========================================
 """
         }
