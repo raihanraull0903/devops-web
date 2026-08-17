@@ -1,23 +1,12 @@
 pipeline {
+
     agent any
 
-    parameters {
-        choice(
-            name: 'ACTION',
-            choices: ['DEPLOY', 'ROLLBACK'],
-            description: 'Pilih aksi deployment'
-        )
-
-        string(
-            name: 'ROLLBACK_TAG',
-            defaultValue: '0a38c38',
-            description: 'Docker image tag untuk rollback'
-        )
-    }
-
     environment {
-        DOCKER_IMAGE = 'raihan999/devops-web'
-        DOCKER_CREDENTIALS = credentials('dockerhub-credentials')
+        DOCKER_USERNAME = 'raihan999'
+        IMAGE_NAME = 'raihan999/devops-web'
+        ANSIBLE_DIR = '/home/ubuntu/devops-project/ansible'
+        INVENTORY = '/home/ubuntu/devops-project/ansible/inventory.ini'
     }
 
     stages {
@@ -28,156 +17,136 @@ pipeline {
             }
         }
 
-        stage('Prepare Version') {
-            when {
-                expression {
-                    params.ACTION == 'DEPLOY'
-                }
-            }
-
-            steps {
-                script {
-                    env.IMAGE_TAG = sh(
-                        script: "git rev-parse --short=7 HEAD",
-                        returnStdout: true
-                    ).trim()
-
-                    echo "Image version: ${env.IMAGE_TAG}"
-                }
-            }
-        }
-
         stage('Test') {
-            when {
-                expression {
-                    params.ACTION == 'DEPLOY'
-                }
-            }
-
             steps {
                 sh '''
-                    echo "================================"
                     echo "Testing DevOps Web..."
-                    echo "================================"
 
                     test -f index.html
                     test -f style.css
                     test -f Dockerfile
 
-                    echo "Test passed!"
+                    echo "Tests passed"
                 '''
             }
         }
 
         stage('Docker Build') {
-            when {
-                expression {
-                    params.ACTION == 'DEPLOY'
-                }
-            }
-
             steps {
-                sh '''
-                    echo "================================"
-                    echo "Building Docker Image"
-                    echo "================================"
+                script {
+                    env.IMAGE_TAG = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
 
-                    docker build \
-                        -t ${DOCKER_IMAGE}:${IMAGE_TAG} \
-                        .
-                '''
+                    env.NEW_IMAGE = "${IMAGE_NAME}:${IMAGE_TAG}"
+
+                    echo "New image: ${NEW_IMAGE}"
+
+                    sh """
+                        docker build -t ${NEW_IMAGE} .
+                    """
+                }
             }
         }
 
         stage('Docker Push') {
-            when {
-                expression {
-                    params.ACTION == 'DEPLOY'
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-credentials',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASSWORD'
+                    )
+                ]) {
+                    sh '''
+                        echo "$DOCKER_PASSWORD" | docker login \
+                            -u "$DOCKER_USER" \
+                            --password-stdin
+
+                        docker push "$NEW_IMAGE"
+                    '''
                 }
             }
+        }
 
+        stage('Get Current Production Image') {
             steps {
-                sh '''
-                    echo "================================"
-                    echo "Pushing Docker Image"
-                    echo "================================"
+                script {
+                    env.PREVIOUS_IMAGE = sh(
+                        script: """
+                            sudo -u jenkins ansible-playbook \
+                            -i ${INVENTORY} \
+                            ${ANSIBLE_DIR}/get-current-image.yml
+                        """,
+                        returnStdout: true
+                    ).readLines()
+                    .findAll { it.contains('Current production image:') }
+                    .collect { it.replace('Current production image:', '').trim() }
+                    .last()
 
-                    echo "$DOCKER_CREDENTIALS_PSW" | docker login \
-                        -u "$DOCKER_CREDENTIALS_USR" \
-                        --password-stdin
-
-                    docker push ${DOCKER_IMAGE}:${IMAGE_TAG}
-
-                    docker tag \
-                        ${DOCKER_IMAGE}:${IMAGE_TAG} \
-                        ${DOCKER_IMAGE}:latest
-
-                    docker push ${DOCKER_IMAGE}:latest
-                '''
+                    echo "Previous production image: ${PREVIOUS_IMAGE}"
+                }
             }
         }
 
         stage('Deploy') {
-            when {
-                expression {
-                    params.ACTION == 'DEPLOY'
-                }
-            }
-
             steps {
-                sh '''
-                    echo "================================"
-                    echo "Deploying ${DOCKER_IMAGE}:${IMAGE_TAG}"
-                    echo "================================"
-
-                    ansible-playbook \
-                        -i /home/ubuntu/devops-project/ansible/inventory.ini \
-                        /home/ubuntu/devops-project/ansible/deploy-web.yml \
-                        -e "docker_image=${DOCKER_IMAGE}:${IMAGE_TAG}"
-                '''
+                sh """
+                    sudo -u jenkins ansible-playbook \
+                    -i ${INVENTORY} \
+                    ${ANSIBLE_DIR}/deploy-web.yml \
+                    -e "image_tag=${IMAGE_TAG}"
+                """
             }
         }
 
-        stage('Rollback') {
-            when {
-                expression {
-                    params.ACTION == 'ROLLBACK'
-                }
-            }
-
+        stage('Health Check') {
             steps {
-                sh '''
-                    echo "================================"
-                    echo "ROLLBACK"
-                    echo "================================"
+                script {
+                    try {
+                        sh """
+                            sudo -u jenkins ansible-playbook \
+                            -i ${INVENTORY} \
+                            ${ANSIBLE_DIR}/health-check.yml
+                        """
+                    } catch (Exception e) {
+                        echo "Health check FAILED!"
+                        echo "Starting automatic rollback..."
 
-                    echo "Rolling back to:"
-                    echo "${DOCKER_IMAGE}:${ROLLBACK_TAG}"
+                        sh """
+                            sudo -u jenkins ansible-playbook \
+                            -i ${INVENTORY} \
+                            ${ANSIBLE_DIR}/rollback-web.yml \
+                            -e "rollback_tag=${PREVIOUS_IMAGE.split(':')[-1]}"
+                        """
 
-                    ansible-playbook \
-                        -i /home/ubuntu/devops-project/ansible/inventory.ini \
-                        /home/ubuntu/devops-project/ansible/rollback-web.yml \
-                        -e "docker_image=${DOCKER_IMAGE}:${ROLLBACK_TAG}"
-
-                    echo "================================"
-                    echo "Rollback completed!"
-                    echo "================================"
-                '''
+                        error("Deployment failed. Automatic rollback completed.")
+                    }
+                }
             }
         }
     }
 
     post {
         success {
-            echo '================================'
-            echo 'PIPELINE SUCCESS'
-            echo '================================'
+            echo "======================================"
+            echo "DEPLOYMENT SUCCESSFUL"
+            echo "Image: ${NEW_IMAGE}"
+            echo "======================================"
         }
 
         failure {
-            echo '================================'
-            echo 'PIPELINE FAILED'
-            echo '================================'
+            echo "======================================"
+            echo "PIPELINE FAILED"
+            echo "Check the logs above."
+            echo "======================================"
+        }
+
+        always {
+            sh '''
+                docker logout || true
+            '''
         }
     }
 }
