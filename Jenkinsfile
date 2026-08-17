@@ -13,6 +13,19 @@ pipeline {
             }
         }
 
+        stage('Prepare Version') {
+            steps {
+                script {
+                    env.IMAGE_TAG = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+
+                    echo "Docker Image: ${DOCKER_IMAGE}:${IMAGE_TAG}"
+                }
+            }
+        }
+
         stage('Test') {
             steps {
                 sh '''
@@ -42,10 +55,12 @@ pipeline {
                     echo "================================"
 
                     docker build --no-cache \
+                        -t ${DOCKER_IMAGE}:${IMAGE_TAG} \
                         -t ${DOCKER_IMAGE}:latest .
 
                     echo ""
-                    echo "Docker build completed!"
+                    echo "Built images:"
+                    docker images ${DOCKER_IMAGE}
                 '''
             }
         }
@@ -68,12 +83,15 @@ pipeline {
                             -u "$DOCKER_USERNAME" \
                             --password-stdin
 
+                        docker push ${DOCKER_IMAGE}:${IMAGE_TAG}
                         docker push ${DOCKER_IMAGE}:latest
 
                         docker logout
 
                         echo ""
-                        echo "Docker push completed!"
+                        echo "Pushed:"
+                        echo "${DOCKER_IMAGE}:${IMAGE_TAG}"
+                        echo "${DOCKER_IMAGE}:latest"
                     '''
                 }
             }
@@ -88,7 +106,8 @@ pipeline {
 
                     ansible-playbook \
                         -i /opt/devops-ansible/inventory.ini \
-                        /opt/devops-ansible/deploy-web.yml
+                        /opt/devops-ansible/deploy-web.yml \
+                        -e "docker_image=${DOCKER_IMAGE}:${IMAGE_TAG}"
 
                     echo ""
                     echo "Deployment completed!"
@@ -102,14 +121,13 @@ pipeline {
             echo '================================'
             echo 'CI/CD PIPELINE SUCCESS!'
             echo '================================'
-            echo 'Website successfully deployed.'
+            echo "Deployed version: ${IMAGE_TAG}"
         }
 
         failure {
             echo '================================'
             echo 'CI/CD PIPELINE FAILED!'
             echo '================================'
-            echo 'Please check the Jenkins console output.'
         }
     }
 }
