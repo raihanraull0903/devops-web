@@ -114,7 +114,7 @@ pipeline {
                      *
                      * CURRENT_IMAGE=raihan999/devops-web:65bebd9
                      *
-                     * dan mengambil seluruh image reference.
+                     * lalu mengambil seluruh image reference.
                      */
 
                     def matcher = output =~ /CURRENT_IMAGE=(raihan999\\/devops-web:[A-Za-z0-9._-]+)/
@@ -160,6 +160,7 @@ pipeline {
                         echo "======================================"
                         echo "DEPLOYMENT FAILED"
                         echo "======================================"
+
                         echo "Starting automatic rollback..."
 
                         def rollbackTag = env.PREVIOUS_IMAGE.substring(
@@ -181,9 +182,40 @@ pipeline {
                             -e "rollback_tag=${rollbackTag}"
                         """
 
-                        echo "Automatic rollback completed."
+                        echo "======================================"
+                        echo "AUTOMATIC ROLLBACK COMPLETED"
+                        echo "======================================"
 
-                        error("Deployment failed. Rollback completed.")
+                        echo "Verifying rollback..."
+
+                        try {
+
+                            sh """
+                                set -e
+
+                                ansible-playbook \
+                                -i ${INVENTORY} \
+                                ${ANSIBLE_DIR}/health-check.yml
+                            """
+
+                            echo "======================================"
+                            echo "ROLLBACK VERIFIED SUCCESSFULLY"
+                            echo "======================================"
+
+                        } catch (Exception rollbackCheckError) {
+
+                            echo "======================================"
+                            echo "ROLLBACK VERIFICATION FAILED"
+                            echo "======================================"
+
+                            error(
+                                "Deployment failed AND rollback verification failed."
+                            )
+                        }
+
+                        error(
+                            "Deployment failed. Rollback completed and verified successfully."
+                        )
                     }
                 }
             }
@@ -208,7 +240,7 @@ pipeline {
                         """
 
                         echo "======================================"
-                        echo "Health Check PASSED"
+                        echo "HEALTH CHECK PASSED"
                         echo "======================================"
 
                     } catch (Exception e) {
@@ -242,7 +274,38 @@ pipeline {
                         echo "AUTOMATIC ROLLBACK COMPLETED"
                         echo "======================================"
 
-                        error("Health check failed. Rollback completed.")
+                        echo "======================================"
+                        echo "VERIFYING ROLLBACK"
+                        echo "======================================"
+
+                        try {
+
+                            sh """
+                                set -e
+
+                                ansible-playbook \
+                                -i ${INVENTORY} \
+                                ${ANSIBLE_DIR}/health-check.yml
+                            """
+
+                            echo "======================================"
+                            echo "ROLLBACK VERIFIED SUCCESSFULLY"
+                            echo "======================================"
+
+                        } catch (Exception rollbackCheckError) {
+
+                            echo "======================================"
+                            echo "ROLLBACK VERIFICATION FAILED"
+                            echo "======================================"
+
+                            error(
+                                "Deployment failed AND rollback verification failed."
+                            )
+                        }
+
+                        error(
+                            "Deployment failed. Rollback completed and verified successfully."
+                        )
                     }
                 }
             }
