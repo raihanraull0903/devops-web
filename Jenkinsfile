@@ -6,6 +6,8 @@ pipeline {
         DOCKER_IMAGE = "raihan999/devops-web"
         INVENTORY = "/home/ubuntu/devops-project/ansible/inventory.ini"
         ANSIBLE_DIR = "/home/ubuntu/devops-project/ansible"
+        // Inisialisasi awal agar bagian 'post' tidak crash saat pipeline gagal di awal
+        PREVIOUS_IMAGE = "none"
     }
 
     stages {
@@ -102,28 +104,21 @@ pipeline {
                         script: """
                             ansible-playbook \
                             -i ${INVENTORY} \
-                            ${ANSIBLE_DIR}/get-current-image.yml
+                            ${ANSIBLE_DIR}/get-current-image.yml || true
                         """,
                         returnStdout: true
                     ).trim()
 
                     echo output
 
-                    /*
-                     * Mencari:
-                     *
-                     * CURRENT_IMAGE=raihan999/devops-web:65bebd9
-                     *
-                     * lalu mengambil seluruh image reference.
-                     */
-
                     def matcher = output =~ /CURRENT_IMAGE=(raihan999\\/devops-web:[A-Za-z0-9._-]+)/
 
-                    if (!matcher.find()) {
-                        error("Gagal mendapatkan CURRENT_IMAGE dari Ansible")
+                    if (matcher.find()) {
+                        env.PREVIOUS_IMAGE = matcher.group(1)
+                    } else {
+                        echo "Kontainer belum ada di server target, menggunakan fallback PREVIOUS_IMAGE = 'none'"
+                        env.PREVIOUS_IMAGE = "none"
                     }
-
-                    env.PREVIOUS_IMAGE = matcher.group(1)
 
                     echo "======================================"
                     echo "Previous Production Image:"
@@ -161,17 +156,18 @@ pipeline {
                         echo "DEPLOYMENT FAILED"
                         echo "======================================"
 
+                        if (env.PREVIOUS_IMAGE == "none") {
+                            error("Deployment gagal dan tidak ada PREVIOUS_IMAGE untuk melakukan rollback.")
+                        }
+
                         echo "Starting automatic rollback..."
 
                         def rollbackTag = env.PREVIOUS_IMAGE.substring(
                             env.PREVIOUS_IMAGE.lastIndexOf(':') + 1
                         )
 
-                        echo "Rollback image:"
-                        echo "${env.PREVIOUS_IMAGE}"
-
-                        echo "Rollback tag:"
-                        echo "${rollbackTag}"
+                        echo "Rollback image: ${env.PREVIOUS_IMAGE}"
+                        echo "Rollback tag: ${rollbackTag}"
 
                         sh """
                             set -e
@@ -249,17 +245,18 @@ pipeline {
                         echo "HEALTH CHECK FAILED"
                         echo "======================================"
 
+                        if (env.PREVIOUS_IMAGE == "none") {
+                            error("Health check gagal dan tidak ada PREVIOUS_IMAGE untuk rollback.")
+                        }
+
                         echo "Starting automatic rollback..."
 
                         def rollbackTag = env.PREVIOUS_IMAGE.substring(
                             env.PREVIOUS_IMAGE.lastIndexOf(':') + 1
                         )
 
-                        echo "Rollback image:"
-                        echo "${env.PREVIOUS_IMAGE}"
-
-                        echo "Rollback tag:"
-                        echo "${rollbackTag}"
+                        echo "Rollback image: ${env.PREVIOUS_IMAGE}"
+                        echo "Rollback tag: ${rollbackTag}"
 
                         sh """
                             set -e
@@ -272,10 +269,6 @@ pipeline {
 
                         echo "======================================"
                         echo "AUTOMATIC ROLLBACK COMPLETED"
-                        echo "======================================"
-
-                        echo "======================================"
-                        echo "VERIFYING ROLLBACK"
                         echo "======================================"
 
                         try {
@@ -293,10 +286,6 @@ pipeline {
                             echo "======================================"
 
                         } catch (Exception rollbackCheckError) {
-
-                            echo "======================================"
-                            echo "ROLLBACK VERIFICATION FAILED"
-                            echo "======================================"
 
                             error(
                                 "Deployment failed AND rollback verification failed."
@@ -326,10 +315,10 @@ pipeline {
 ========================================
 
 Previous production image:
-${PREVIOUS_IMAGE ?: 'Not available'}
+${env.PREVIOUS_IMAGE}
 
 New image:
-${NEW_IMAGE ?: 'Not available'}
+${env.NEW_IMAGE ?: 'Not available'}
 
 ========================================
 """
@@ -343,7 +332,7 @@ ${NEW_IMAGE ?: 'Not available'}
 ========================================
 
 Production image:
-${NEW_IMAGE}
+${env.NEW_IMAGE}
 
 Health check:
 PASSED
@@ -360,7 +349,7 @@ PASSED
 ========================================
 
 Previous production image:
-${PREVIOUS_IMAGE ?: 'Not available'}
+${env.PREVIOUS_IMAGE}
 
 Automatic rollback:
 Attempted
